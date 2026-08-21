@@ -20,15 +20,6 @@ from .webchat_queue_mgr import webchat_queue_mgr
 attachments_dir = os.path.join(get_astrbot_data_path(), "attachments")
 
 
-def _extract_conversation_id(session_id: str) -> str:
-    """Extract raw webchat conversation id from event/session id."""
-    if session_id.startswith("webchat!"):
-        parts = session_id.split("!", 2)
-        if len(parts) == 3:
-            return parts[2]
-    return session_id
-
-
 class WebChatMessageEvent(AstrMessageEvent):
     def __init__(self, message_str, message_obj, platform_meta, session_id) -> None:
         super().__init__(message_str, message_obj, platform_meta, session_id)
@@ -43,11 +34,11 @@ class WebChatMessageEvent(AstrMessageEvent):
         emit_complete: bool = False,
     ) -> str | None:
         request_id = str(message_id)
-        conversation_id = _extract_conversation_id(session_id)
-        web_chat_back_queue = webchat_queue_mgr.get_or_create_back_queue(
-            request_id,
-            conversation_id,
-        )
+        web_chat_back_queue = webchat_queue_mgr.get_back_queue(request_id)
+        if web_chat_back_queue is None:
+            # The HTTP client disconnected. Keep driving the agent, but discard
+            # output instead of recreating an orphaned queue that can fill up.
+            return None
         if not message:
             await web_chat_back_queue.put(
                 {
@@ -162,11 +153,6 @@ class WebChatMessageEvent(AstrMessageEvent):
         reasoning_content = ""
         message_id = self.message_obj.message_id
         request_id = str(message_id)
-        conversation_id = _extract_conversation_id(self.session_id)
-        web_chat_back_queue = webchat_queue_mgr.get_or_create_back_queue(
-            request_id,
-            conversation_id,
-        )
         async for chain in generator:
             # 处理音频流（Live Mode）
             if chain.type == "audio_chunk":
@@ -189,7 +175,9 @@ class WebChatMessageEvent(AstrMessageEvent):
                 if text:
                     payload["text"] = text
 
-                await web_chat_back_queue.put(payload)
+                web_chat_back_queue = webchat_queue_mgr.get_back_queue(request_id)
+                if web_chat_back_queue is not None:
+                    await web_chat_back_queue.put(payload)
                 continue
 
             # if chain.type == "break" and final_data:
@@ -217,13 +205,15 @@ class WebChatMessageEvent(AstrMessageEvent):
             else:
                 final_data += r
 
-        await web_chat_back_queue.put(
-            {
-                "type": "complete",  # complete means we return the final result
-                "data": final_data,
-                "reasoning": reasoning_content,
-                "streaming": True,
-                "message_id": message_id,
-            },
-        )
+        web_chat_back_queue = webchat_queue_mgr.get_back_queue(request_id)
+        if web_chat_back_queue is not None:
+            await web_chat_back_queue.put(
+                {
+                    "type": "complete",  # complete means we return the final result
+                    "data": final_data,
+                    "reasoning": reasoning_content,
+                    "streaming": True,
+                    "message_id": message_id,
+                },
+            )
         await super().send_streaming(generator, use_fallback)

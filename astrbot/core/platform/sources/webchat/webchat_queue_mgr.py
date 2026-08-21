@@ -4,6 +4,32 @@ from collections.abc import Awaitable, Callable
 from astrbot import logger
 
 
+class _ClosableQueue(asyncio.Queue):
+    """Queue that releases blocked producers when its consumer disconnects."""
+
+    def __init__(self, maxsize: int) -> None:
+        super().__init__(maxsize=maxsize)
+        self._closed = False
+
+    async def put(self, item) -> None:
+        if self._closed:
+            return
+        await super().put(item)
+
+    def put_nowait(self, item) -> None:
+        if self._closed:
+            return
+        super().put_nowait(item)
+
+    def close(self) -> None:
+        self._closed = True
+        while not self.empty():
+            try:
+                self.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
+
 class WebChatQueueMgr:
     def __init__(self, queue_maxsize: int = 128, back_queue_maxsize: int = 512) -> None:
         self.queues: dict[str, asyncio.Queue] = {}
@@ -33,7 +59,7 @@ class WebChatQueueMgr:
     ) -> asyncio.Queue:
         """Get or create a back queue for the given request ID"""
         if request_id not in self.back_queues:
-            self.back_queues[request_id] = asyncio.Queue(
+            self.back_queues[request_id] = _ClosableQueue(
                 maxsize=self.back_queue_maxsize
             )
         if conversation_id:
@@ -43,9 +69,15 @@ class WebChatQueueMgr:
             self._conversation_back_requests[conversation_id].add(request_id)
         return self.back_queues[request_id]
 
+    def get_back_queue(self, request_id: str) -> asyncio.Queue | None:
+        """Return an existing response queue without recreating it."""
+        return self.back_queues.get(request_id)
+
     def remove_back_queue(self, request_id: str):
         """Remove back queue for the given request ID"""
-        self.back_queues.pop(request_id, None)
+        queue = self.back_queues.pop(request_id, None)
+        if isinstance(queue, _ClosableQueue):
+            queue.close()
         conversation_id = self._request_conversation.pop(request_id, None)
         if conversation_id:
             request_ids = self._conversation_back_requests.get(conversation_id)

@@ -65,7 +65,7 @@ async def test_webchat_image_attachment_uses_detected_extension(tmp_path, monkey
     monkeypatch.setattr(webchat_event, "attachments_dir", str(tmp_path))
     monkeypatch.setattr(
         webchat_event.webchat_queue_mgr,
-        "get_or_create_back_queue",
+        "get_back_queue",
         lambda *_args: queue,
     )
 

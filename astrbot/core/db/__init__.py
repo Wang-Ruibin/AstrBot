@@ -49,6 +49,8 @@ class BaseDatabase(abc.ABC):
             echo=False,
             future=True,
             connect_args=connect_args,
+            pool_pre_ping=True,
+            pool_recycle=3600,
         )
         self.AsyncSessionLocal = async_sessionmaker(
             self.engine,

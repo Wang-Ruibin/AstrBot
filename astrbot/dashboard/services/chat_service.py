@@ -773,13 +773,15 @@ class ChatService:
                     )
                     extracted_refs = refs
 
-                saved_record = await self.save_bot_message(
-                    webchat_conv_id,
-                    message_parts_to_save,
-                    agent_stats,
-                    extracted_refs,
-                    llm_checkpoint_id,
-                    platform_history_id,
+                saved_record = await asyncio.shield(
+                    self.save_bot_message(
+                        webchat_conv_id,
+                        message_parts_to_save,
+                        agent_stats,
+                        extracted_refs,
+                        llm_checkpoint_id,
+                        platform_history_id,
+                    )
                 )
                 message_accumulator = BotMessageAccumulator()
                 agent_stats = {}
@@ -945,17 +947,23 @@ class ChatService:
                                     pass
                         if msg_type == "end":
                             break
-            except BaseException as e:
+            except (asyncio.CancelledError, GeneratorExit):
+                client_disconnected = True
+                logger.debug(f"[WebChat] 用户 {username} 断开聊天长连接。")
+            except Exception as e:
                 logger.exception(f"WebChat stream unexpected error: {e}", exc_info=True)
             finally:
                 try:
                     await flush_pending_bot_message()
+                except asyncio.CancelledError:
+                    pass
                 except Exception as e:
                     logger.exception(
                         f"Failed to persist pending webchat message: {e}",
                         exc_info=True,
                     )
-                webchat_queue_mgr.remove_back_queue(message_id)
+                finally:
+                    webchat_queue_mgr.remove_back_queue(message_id)
 
         chat_queue = webchat_queue_mgr.get_or_create_queue(webchat_conv_id)
         await chat_queue.put(
