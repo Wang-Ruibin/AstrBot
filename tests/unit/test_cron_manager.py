@@ -1,5 +1,6 @@
 """Tests for CronJobManager."""
 
+import json
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
@@ -69,6 +70,7 @@ class TestCronJobManagerInit:
         assert manager.db == mock_db
         assert manager._basic_handlers == {}
         assert manager._started is False
+        assert manager._db_synced is False
 
 
 class TestCronJobManagerStart:
@@ -94,6 +96,52 @@ class TestCronJobManagerStart:
 
         # Should only sync once
         assert mock_db.list_cron_jobs.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_start_resyncs_after_shutdown(
+        self, cron_manager, mock_db, mock_context
+    ):
+        """Test that restarting the manager resyncs the database."""
+        mock_db.list_cron_jobs.return_value = []
+
+        await cron_manager.start(mock_context)
+        await cron_manager.shutdown()
+
+        assert cron_manager._started is False
+        assert cron_manager._db_synced is False
+
+        await cron_manager.start(mock_context)
+
+        assert mock_db.list_cron_jobs.call_count == 2
+        assert cron_manager._started is True
+        assert cron_manager._db_synced is True
+
+        await cron_manager.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_start_syncs_after_scheduler_started_early(
+        self, cron_manager, mock_db, mock_context, sample_cron_job
+    ):
+        """Test that early scheduler startup does not skip database sync."""
+        mock_db.create_cron_job.return_value = sample_cron_job
+        mock_db.list_cron_jobs.return_value = [sample_cron_job]
+
+        await cron_manager.add_basic_job(
+            name="Early Job",
+            cron_expression="0 9 * * *",
+            handler=MagicMock(),
+            enabled=True,
+            persistent=False,
+        )
+
+        await cron_manager.start(mock_context)
+
+        assert cron_manager._started is True
+        assert cron_manager._db_synced is True
+        assert cron_manager.scheduler.get_job(sample_cron_job.job_id) is not None
+        assert mock_db.list_cron_jobs.call_count == 1
+
+        await cron_manager.shutdown()
 
 
 class TestCronJobManagerShutdown:
@@ -538,21 +586,30 @@ class TestRunActiveAgentJob:
     """Tests for active agent cron job execution."""
 
     @pytest.mark.asyncio
-    async def test_woke_main_agent_passes_provider_settings(self, cron_manager):
-        """Test active cron agent keeps fallback chat model settings."""
+    async def test_woke_main_agent_passes_history_and_provider_settings(
+        self, cron_manager
+    ):
+        """Test active cron agent keeps structured history and provider settings."""
         provider_settings = {
-            "tool_call_timeout": 77,
             "fallback_chat_models": ["fallback-provider"],
         }
         ctx = MagicMock()
         ctx.get_config.return_value = {
             "admins_id": [],
             "provider_settings": provider_settings,
+            "agent_runner": {
+                "runner_type": "local",
+                "config": {"misc": {"tool_call_timeout": 77}},
+            },
         }
         cron_manager.ctx = ctx
 
+        history = [
+            {"role": "user", "content": "old question"},
+            {"role": "assistant", "content": "old answer"},
+        ]
         conv = MagicMock()
-        conv.history = "[]"
+        conv.history = json.dumps(history)
 
         class FakeRunner:
             def step_until_done(self, max_step):
@@ -569,6 +626,7 @@ class TestRunActiveAgentJob:
 
         async def fake_build_main_agent(*, event, plugin_context, config, req):
             captured["config"] = config
+            captured["req"] = req
             return MagicMock(agent_runner=FakeRunner())
 
         async def fake_persist_agent_history(*args, **kwargs):
@@ -598,6 +656,86 @@ class TestRunActiveAgentJob:
         assert config.tool_call_timeout == 77
         assert config.provider_settings is provider_settings
         assert config.provider_settings["fallback_chat_models"] == ["fallback-provider"]
+        request = captured["req"]
+        assert "old question" not in request.system_prompt
+        assert "old answer" not in request.system_prompt
+        assert request.contexts == history
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("provider_settings", "expected_max_step"),
+        [
+            pytest.param({"max_agent_step": 50}, 50, id="configured"),
+            pytest.param({}, 30, id="missing_falls_back_to_default"),
+            pytest.param(
+                {"max_agent_step": True}, 30, id="boolean_falls_back_to_default"
+            ),
+            pytest.param({"max_agent_step": "50"}, 50, id="numeric_string_coerced"),
+            pytest.param({"max_agent_step": 0}, 1, id="zero_clamped_to_min"),
+        ],
+    )
+    async def test_woke_main_agent_applies_max_agent_step(
+        self, cron_manager, provider_settings, expected_max_step
+    ):
+        """Test the cron agent runner receives max_agent_step from provider settings."""
+
+        class _StepCapturingRunner:
+            def __init__(self):
+                self.captured_max_step = None
+
+            def step_until_done(self, max_step):
+                self.captured_max_step = max_step
+
+                async def gen():
+                    if False:
+                        yield None
+
+                return gen()
+
+            def get_final_llm_resp(self):
+                return None
+
+        ctx = MagicMock()
+        ctx.get_config.return_value = {
+            "admins_id": [],
+            "provider_settings": {},
+            "agent_runner": {
+                "runner_type": "local",
+                "config": {
+                    "misc": {"max_steps": provider_settings.get("max_agent_step", 30)}
+                },
+            },
+        }
+        cron_manager.ctx = ctx
+
+        conv = MagicMock()
+        conv.history = "[]"
+        runner = _StepCapturingRunner()
+
+        async def fake_build_main_agent(*, event, plugin_context, config, req):
+            return MagicMock(agent_runner=runner)
+
+        with (
+            patch(
+                "astrbot.core.astr_main_agent._get_session_conv",
+                AsyncMock(return_value=conv),
+            ),
+            patch(
+                "astrbot.core.astr_main_agent.build_main_agent",
+                side_effect=fake_build_main_agent,
+            ),
+            patch(
+                "astrbot.core.cron.manager.persist_agent_history",
+                AsyncMock(),
+            ),
+        ):
+            await cron_manager._woke_main_agent(
+                message="run scheduled task",
+                session_str="test:FriendMessage:user123",
+                extras={"cron_job": {"id": "job-1"}, "cron_payload": {}},
+            )
+
+        assert runner.captured_max_step == expected_max_step
 
 
 class TestGetNextRunTime:

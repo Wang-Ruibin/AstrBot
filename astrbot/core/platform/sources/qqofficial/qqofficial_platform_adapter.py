@@ -14,12 +14,14 @@ import botpy.message
 from botpy import Client
 from botpy.connection import ConnectionState
 from botpy.gateway import BotWebSocket
+from botpy.types.message import MarkdownPayload
 
 from astrbot import logger
 from astrbot.api.event import MessageChain
-from astrbot.api.message_components import At, File, Image, Plain, Record, Video
+from astrbot.api.message_components import At, File, Image, Plain, Record, Reply, Video
 from astrbot.api.platform import (
     AstrBotMessage,
+    Group,
     MessageMember,
     MessageType,
     Platform,
@@ -37,7 +39,75 @@ for handler in logging.root.handlers[:]:
     logging.root.removeHandler(handler)
 
 
+def _set_raw_message_fields(message: Any, data: dict[str, Any]) -> None:
+    """Preserve QQ message fields that qq-botpy does not expose.
+
+    Args:
+        message: Patched qq-botpy message object.
+        data: Raw message payload from QQ.
+
+    Returns:
+        None.
+    """
+    if not isinstance(data, dict):
+        data = {}
+    message.raw_data = data
+    message.message_type = data.get("message_type")
+    msg_elements = data.get("msg_elements")
+    message.msg_elements = msg_elements if isinstance(msg_elements, list) else []
+
+
+class PatchedMessage(botpy.message.Message):
+    __slots__ = ("raw_data", "message_type", "msg_elements")
+
+    def __init__(
+        self,
+        api: Any,
+        event_id: str | None,
+        data: dict[str, Any],
+    ) -> None:
+        super().__init__(api, event_id, data)  # type: ignore
+        _set_raw_message_fields(self, data)
+
+
+class PatchedDirectMessage(botpy.message.DirectMessage):
+    __slots__ = ("raw_data", "message_type", "msg_elements")
+
+    def __init__(
+        self,
+        api: Any,
+        event_id: str | None,
+        data: dict[str, Any],
+    ) -> None:
+        super().__init__(api, event_id, data)  # type: ignore
+        _set_raw_message_fields(self, data)
+
+
+class PatchedC2CMessage(botpy.message.C2CMessage):
+    __slots__ = ("raw_data", "message_type", "msg_elements")
+
+    def __init__(
+        self,
+        api: Any,
+        event_id: str | None,
+        data: dict[str, Any],
+    ) -> None:
+        super().__init__(api, event_id, data)  # type: ignore
+        _set_raw_message_fields(self, data)
+
+
 class PatchedGroupMessage(botpy.message.GroupMessage):
+    __slots__ = ("raw_data", "message_type", "msg_elements")
+
+    def __init__(
+        self,
+        api: Any,
+        event_id: str | None,
+        data: dict[str, Any],
+    ) -> None:
+        super().__init__(api, event_id, data)  # type: ignore
+        _set_raw_message_fields(self, data)
+
     class _User:
         def __init__(self, data: dict[str, Any]) -> None:
             self.id = data.get("id", None)
@@ -53,21 +123,43 @@ class PatchedGroupMessage(botpy.message.GroupMessage):
 
 
 def _ensure_group_message_create_parser() -> None:
-    """Register the missing qq-botpy parser for GROUP_MESSAGE_CREATE."""
+    """Register qq-botpy message parsers with QQ quote payload preservation."""
 
-    if hasattr(ConnectionState, "parse_group_message_create"):
-        return
+    def build_parser(event_name: str, message_cls: type) -> Any:
+        """Build a ConnectionState parser for one QQ message event.
 
-    def parse_group_message_create(self, payload: dict[str, Any]) -> None:
-        group_message = PatchedGroupMessage(
-            self.api,
-            payload.get("id", None),
-            payload.get("d", {}),
+        Args:
+            event_name: botpy dispatch event name.
+            message_cls: Patched message class used to retain raw fields.
+
+        Returns:
+            Parser function bound by qq-botpy's ConnectionState.
+        """
+
+        def parse_message(self, payload: dict[str, Any]) -> None:
+            qq_message = message_cls(
+                self.api,
+                payload.get("id", None),
+                payload.get("d", {}),
+            )
+            self._dispatch(event_name, qq_message)
+
+        return parse_message
+
+    parser_specs = {
+        "message_create": ("message_create", PatchedMessage),
+        "at_message_create": ("at_message_create", PatchedMessage),
+        "direct_message_create": ("direct_message_create", PatchedDirectMessage),
+        "group_at_message_create": ("group_at_message_create", PatchedGroupMessage),
+        "c2c_message_create": ("c2c_message_create", PatchedC2CMessage),
+        "group_message_create": ("group_message_create", PatchedGroupMessage),
+    }
+    for parser_name, (event_name, message_cls) in parser_specs.items():
+        setattr(
+            ConnectionState,
+            f"parse_{parser_name}",
+            build_parser(event_name, message_cls),
         )
-        logger.debug("[QQOfficial] Received group message: %s", group_message)
-        self._dispatch("group_message_create", group_message)
-
-    setattr(ConnectionState, "parse_group_message_create", parse_group_message_create)
 
 
 class ManagedBotWebSocket(BotWebSocket):
@@ -203,6 +295,8 @@ class QQOfficialPlatformAdapter(Platform):
         self.secret = platform_config["secret"]
         qq_group = platform_config["enable_group_c2c"]
         guild_dm = platform_config["enable_guild_direct_message"]
+        # 旧存档配置没有该键，缺省视为启用 Markdown，与历史行为一致
+        self.use_markdown_default = platform_config.get("use_markdown", True)
 
         if qq_group:
             self.intents = botpy.Intents(
@@ -243,6 +337,22 @@ class QQOfficialPlatformAdapter(Platform):
         session: MessageSesion,
         message_chain: MessageChain,
     ) -> None:
+        """Send a message after resolving the QQ Official delivery session.
+
+        Args:
+            session: Persisted session used to route the message.
+            message_chain: Message content to send.
+
+        Returns:
+            None.
+        """
+        if session.message_type == MessageType.GROUP_MESSAGE:
+            session = MessageSesion(
+                session.platform_id,
+                session.message_type,
+                session.session_id.rsplit("_", 1)[-1],
+            )
+
         message_chains = QQOfficialMessageEvent._split_message_chain_by_media(
             message_chain
         )
@@ -289,7 +399,14 @@ class QQOfficialPlatformAdapter(Platform):
             )
             return
 
-        payload: dict[str, Any] = {"content": plain_text}
+        use_md = getattr(message_chain, "use_markdown_", None)
+        if use_md is False or (use_md is None and not self.use_markdown_default):
+            payload: dict[str, Any] = {"content": plain_text}
+        else:
+            payload = {
+                "markdown": MarkdownPayload(content=plain_text) if plain_text else None,
+                "msg_type": 2,
+            }
         if msg_id and not allow_group_proactive_send:
             payload["msg_id"] = msg_id
         ret: Any = None
@@ -307,6 +424,8 @@ class QQOfficialPlatformAdapter(Platform):
                     )
                     payload["media"] = media
                     payload["msg_type"] = 7
+                    payload.pop("markdown", None)
+                    payload["content"] = plain_text or None
                 if record_file_path:
                     media = await QQOfficialMessageEvent.upload_group_and_c2c_media(
                         send_helper,  # type: ignore
@@ -317,6 +436,8 @@ class QQOfficialPlatformAdapter(Platform):
                     if media:
                         payload["media"] = media
                         payload["msg_type"] = 7
+                        payload.pop("markdown", None)
+                        payload["content"] = plain_text or None
                 if video_file_source:
                     media = await QQOfficialMessageEvent.upload_group_and_c2c_media(
                         send_helper,  # type: ignore
@@ -327,6 +448,8 @@ class QQOfficialPlatformAdapter(Platform):
                     if media:
                         payload["media"] = media
                         payload["msg_type"] = 7
+                        payload.pop("markdown", None)
+                        payload["content"] = plain_text or None
                         payload.pop("msg_id", None)
                 if file_source:
                     media = await QQOfficialMessageEvent.upload_group_and_c2c_media(
@@ -339,17 +462,29 @@ class QQOfficialPlatformAdapter(Platform):
                     if media:
                         payload["media"] = media
                         payload["msg_type"] = 7
+                        payload.pop("markdown", None)
+                        payload["content"] = plain_text or None
                         payload.pop("msg_id", None)
-                ret = await self.client.api.post_group_message(
-                    group_openid=session.session_id,
-                    **payload,
+                ret = await QQOfficialMessageEvent._send_with_markdown_fallback(
+                    send_func=lambda retry_payload: self.client.api.post_group_message(
+                        group_openid=session.session_id,
+                        **retry_payload,
+                    ),
+                    payload=payload,
+                    plain_text=plain_text,
                 )
             else:
                 if image_path:
                     payload["file_image"] = image_path
-                ret = await self.client.api.post_message(
-                    channel_id=session.session_id,
-                    **payload,
+                # Guild text-channel send API does not use the QQ v2 msg_type field.
+                payload.pop("msg_type", None)
+                ret = await QQOfficialMessageEvent._send_with_markdown_fallback(
+                    send_func=lambda retry_payload: self.client.api.post_message(
+                        channel_id=session.session_id,
+                        **retry_payload,
+                    ),
+                    payload=payload,
+                    plain_text=plain_text,
                 )
 
         elif session.message_type == MessageType.FRIEND_MESSAGE:
@@ -366,6 +501,8 @@ class QQOfficialPlatformAdapter(Platform):
                 )
                 payload["media"] = media
                 payload["msg_type"] = 7
+                payload.pop("markdown", None)
+                payload["content"] = plain_text or None
             if record_file_path:
                 media = await QQOfficialMessageEvent.upload_group_and_c2c_media(
                     send_helper,  # type: ignore
@@ -376,6 +513,8 @@ class QQOfficialPlatformAdapter(Platform):
                 if media:
                     payload["media"] = media
                     payload["msg_type"] = 7
+                    payload.pop("markdown", None)
+                    payload["content"] = plain_text or None
             if video_file_source:
                 media = await QQOfficialMessageEvent.upload_group_and_c2c_media(
                     send_helper,  # type: ignore
@@ -386,6 +525,8 @@ class QQOfficialPlatformAdapter(Platform):
                 if media:
                     payload["media"] = media
                     payload["msg_type"] = 7
+                    payload.pop("markdown", None)
+                    payload["content"] = plain_text or None
             if file_source:
                 media = await QQOfficialMessageEvent.upload_group_and_c2c_media(
                     send_helper,  # type: ignore
@@ -397,11 +538,17 @@ class QQOfficialPlatformAdapter(Platform):
                 if media:
                     payload["media"] = media
                     payload["msg_type"] = 7
+                    payload.pop("markdown", None)
+                    payload["content"] = plain_text or None
 
-            ret = await QQOfficialMessageEvent.post_c2c_message(
-                send_helper,  # type: ignore
-                openid=session.session_id,
-                **payload,
+            ret = await QQOfficialMessageEvent._send_with_markdown_fallback(
+                send_func=lambda retry_payload: QQOfficialMessageEvent.post_c2c_message(
+                    send_helper,  # type: ignore
+                    openid=session.session_id,
+                    **retry_payload,
+                ),
+                payload=payload,
+                plain_text=plain_text,
             )
         else:
             logger.warning(
@@ -491,25 +638,41 @@ class QQOfficialPlatformAdapter(Platform):
             return
 
         for attachment in attachments:
-            content_type = cast(
-                str,
-                getattr(attachment, "content_type", "") or "",
-            ).lower()
-            url = QQOfficialPlatformAdapter._normalize_attachment_url(
-                cast(str | None, getattr(attachment, "url", None))
-            )
-            if not url:
-                continue
-
-            if content_type.startswith("image"):
-                msg.append(Image.fromURL(url))
+            if isinstance(attachment, dict):
+                content_type = str(
+                    attachment.get("content_type")
+                    or attachment.get("contentType")
+                    or "",
+                ).lower()
+                url = QQOfficialPlatformAdapter._normalize_attachment_url(
+                    cast(str | None, attachment.get("url"))
+                )
+                filename = cast(
+                    str,
+                    attachment.get("filename")
+                    or attachment.get("name")
+                    or "attachment",
+                )
             else:
+                content_type = cast(
+                    str,
+                    getattr(attachment, "content_type", "") or "",
+                ).lower()
+                url = QQOfficialPlatformAdapter._normalize_attachment_url(
+                    cast(str | None, getattr(attachment, "url", None))
+                )
                 filename = cast(
                     str,
                     getattr(attachment, "filename", None)
                     or getattr(attachment, "name", None)
                     or "attachment",
                 )
+            if not url:
+                continue
+
+            if content_type.startswith("image"):
+                msg.append(Image.fromURL(url))
+            else:
                 ext = Path(filename).suffix.lower()
                 image_exts = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
                 audio_exts = {
@@ -607,6 +770,53 @@ class QQOfficialPlatformAdapter(Platform):
         abm.message_id = message.id
         # abm.tag = "qq_official"
         msg: list[BaseMessageComponent] = []
+        message_reference = getattr(message, "message_reference", None)
+        quoted_message_id = getattr(message_reference, "message_id", None)
+        raw_message_type = getattr(message, "message_type", None)
+        try:
+            is_quoted_message = int(raw_message_type or 0) == 103
+        except (TypeError, ValueError):
+            is_quoted_message = False
+        msg_elements = getattr(message, "msg_elements", None)
+        quoted_message_str = ""
+        quoted_element_message_id = ""
+        quoted_chain: list[BaseMessageComponent] = []
+        if is_quoted_message and isinstance(msg_elements, list) and msg_elements:
+            quoted_element = msg_elements[0]
+            if isinstance(quoted_element, dict):
+                quoted_content = quoted_element.get("content")
+                quoted_attachments = quoted_element.get("attachments")
+                quoted_element_message_id = str(
+                    quoted_element.get("id") or quoted_element.get("message_id") or "",
+                )
+            else:
+                quoted_content = getattr(quoted_element, "content", None)
+                quoted_attachments = getattr(quoted_element, "attachments", None)
+                quoted_element_message_id = str(
+                    getattr(quoted_element, "id", None)
+                    or getattr(quoted_element, "message_id", None)
+                    or "",
+                )
+
+            quoted_message_str = QQOfficialPlatformAdapter._parse_face_message(
+                str(quoted_content or "").strip()
+            )
+            if quoted_message_str:
+                quoted_chain.append(Plain(quoted_message_str))
+            if isinstance(quoted_attachments, list):
+                await QQOfficialPlatformAdapter._append_attachments(
+                    quoted_chain,
+                    quoted_attachments,
+                )
+        if quoted_message_id or quoted_element_message_id or quoted_chain:
+            msg.append(
+                Reply(
+                    id=str(quoted_message_id or quoted_element_message_id or ""),
+                    chain=quoted_chain,
+                    message_str=quoted_message_str,
+                    text=quoted_message_str,
+                )
+            )
 
         if isinstance(message, botpy.message.GroupMessage) or isinstance(
             message,
@@ -617,7 +827,14 @@ class QQOfficialPlatformAdapter(Platform):
                     message.author.member_openid,
                     getattr(message.author, "username", "") or "",
                 )
-                abm.group_id = message.group_openid
+                raw_data = getattr(message, "raw_data", {})
+                group_name = getattr(message, "group_name", None)
+                if not group_name and isinstance(raw_data, dict):
+                    group_name = raw_data.get("group_name")
+                abm.group = Group(
+                    group_id=message.group_openid,
+                    group_name=str(group_name) if group_name else None,
+                )
                 bot_mentions = [
                     mention
                     for mention in (getattr(message, "mentions", None) or [])
@@ -689,7 +906,14 @@ class QQOfficialPlatformAdapter(Platform):
             msg.append(Plain(plain_content))
 
             if isinstance(message, botpy.message.Message):
-                abm.group_id = message.channel_id
+                raw_data = getattr(message, "raw_data", {})
+                channel_name = getattr(message, "channel_name", None)
+                if not channel_name and isinstance(raw_data, dict):
+                    channel_name = raw_data.get("channel_name")
+                abm.group = Group(
+                    group_id=message.channel_id,
+                    group_name=str(channel_name) if channel_name else None,
+                )
         else:
             raise ValueError(f"Unknown message type: {message_type}")
         if not abm.self_id:

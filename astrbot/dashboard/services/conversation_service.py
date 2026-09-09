@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import traceback
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime
 from io import BytesIO
 
@@ -31,6 +31,7 @@ class ConversationService:
     ) -> None:
         self.db_helper = db_helper
         self.conv_mgr = core_lifecycle.conversation_manager
+        self.core_lifecycle = core_lifecycle
 
     async def list_conversations(
         self,
@@ -42,13 +43,23 @@ class ConversationService:
         search_query: str,
         exclude_ids: str,
         exclude_platforms: str,
+        keyword_query: str = "",
+        umo_query: str = "",
+        sort_by: str = "created_at",
+        sort_order: str = "desc",
+        group_by_session: bool = False,
+        include_history: bool = True,
     ) -> dict:
-        platform_list = platforms.split(",") if platforms else []
-        message_type_list = message_types.split(",") if message_types else []
-        exclude_id_list = exclude_ids.split(",") if exclude_ids else []
-        exclude_platform_list = (
-            exclude_platforms.split(",") if exclude_platforms else []
-        )
+        platform_list = [item.strip() for item in platforms.split(",") if item.strip()]
+        message_type_list = [
+            item.strip() for item in message_types.split(",") if item.strip()
+        ]
+        exclude_id_list = [
+            item.strip() for item in exclude_ids.split(",") if item.strip()
+        ]
+        exclude_platform_list = [
+            item.strip() for item in exclude_platforms.split(",") if item.strip()
+        ]
 
         page = max(page, 1)
         if page_size < 1:
@@ -64,6 +75,12 @@ class ConversationService:
                 search_query=search_query,
                 exclude_ids=exclude_id_list,
                 exclude_platforms=exclude_platform_list,
+                keyword_query=keyword_query.strip(),
+                umo_query=umo_query.strip(),
+                sort_by=sort_by,
+                sort_order=sort_order,
+                group_by_session=group_by_session,
+                include_history=include_history,
             )
         except Exception as exc:
             logger.error(f"数据库查询出错: {exc!s}\n{traceback.format_exc()}")
@@ -77,7 +94,11 @@ class ConversationService:
 
         return {
             "conversations": [
-                self._serialize_conversation(conversation, alias_map)
+                self._serialize_conversation(
+                    conversation,
+                    alias_map,
+                    include_history=include_history,
+                )
                 for conversation in conversations
             ],
             "pagination": {
@@ -85,8 +106,37 @@ class ConversationService:
                 "page_size": page_size,
                 "total": total_count,
                 "total_pages": total_pages,
+                "grouped_by_session": group_by_session,
             },
         }
+
+    async def get_filter_options(self) -> dict:
+        """Build robot filter options from configured conversation platforms.
+
+        Returns:
+            Robot IDs and adapter types that exist in both configuration and
+            conversation history.
+        """
+        history_platform_ids = set(await self.db_helper.get_conversation_platform_ids())
+        configured_platforms = self.core_lifecycle.astrbot_config.get("platform", [])
+        bots = [
+            {
+                "id": str(platform.get("id", "")),
+                "type": str(platform.get("type", "")),
+            }
+            for platform in configured_platforms
+            if platform.get("id") in history_platform_ids
+        ]
+
+        # WebChat is a built-in platform that the platform manager always
+        # starts regardless of config, so expose it as a filterable bot ID even
+        # when it is missing from the configured platform list.
+        if "webchat" in history_platform_ids and not any(
+            bot["id"] == "webchat" for bot in bots
+        ):
+            bots.append({"id": "webchat", "type": "webchat"})
+
+        return {"bots": bots}
 
     async def get_conversation_detail(self, data: object) -> dict:
         payload = self._payload(data)
@@ -270,11 +320,37 @@ class ConversationService:
             "failed_items": failed_items,
         }
 
-    def _serialize_conversation(self, conversation, alias_map: dict) -> dict:
-        return {
-            **asdict(conversation),
+    def _serialize_conversation(
+        self,
+        conversation,
+        alias_map: dict,
+        *,
+        include_history: bool,
+    ) -> dict:
+        """Serialize a conversation for a list response.
+
+        Args:
+            conversation: Conversation object returned by the manager.
+            alias_map: UMO aliases keyed by unified message origin.
+            include_history: Whether to include the serialized message history.
+
+        Returns:
+            Conversation data suitable for a dashboard API response.
+        """
+        result = {
+            "platform_id": conversation.platform_id,
+            "user_id": conversation.user_id,
+            "cid": conversation.cid,
+            "title": conversation.title,
+            "persona_id": conversation.persona_id,
+            "token_usage": conversation.token_usage,
+            "created_at": conversation.created_at,
+            "updated_at": conversation.updated_at,
             "umo_info": self._build_umo_info(conversation.user_id, alias_map),
         }
+        if include_history:
+            result["history"] = conversation.history
+        return result
 
     @staticmethod
     def _build_umo_info(umo: str | None, alias_map: dict) -> dict:

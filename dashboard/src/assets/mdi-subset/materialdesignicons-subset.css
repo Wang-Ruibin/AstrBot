@@ -1,4 +1,4 @@
-/* Auto-generated MDI subset – 279 icons */
+/* Auto-generated MDI subset – 273 icons */
 /* Do not edit manually. Run: pnpm run subset-icons */
 
 @font-face {
@@ -24,20 +24,12 @@
   content: "\F0004";
 }
 
-.mdi-account-circle::before {
-  content: "\F0009";
-}
-
 .mdi-account-edit::before {
   content: "\F06BC";
 }
 
 .mdi-account-edit-outline::before {
   content: "\F0FFB";
-}
-
-.mdi-account-heart::before {
-  content: "\F0899";
 }
 
 .mdi-account-voice::before {
@@ -104,6 +96,10 @@
   content: "\F19B2";
 }
 
+.mdi-auto-fix::before {
+  content: "\F0068";
+}
+
 .mdi-backup-restore::before {
   content: "\F006F";
 }
@@ -158,6 +154,10 @@
 
 .mdi-chat::before {
   content: "\F0B79";
+}
+
+.mdi-chat-outline::before {
+  content: "\F0EDE";
 }
 
 .mdi-chat-processing::before {
@@ -256,10 +256,6 @@
   content: "\F0167";
 }
 
-.mdi-code-braces::before {
-  content: "\F0169";
-}
-
 .mdi-code-json::before {
   content: "\F0626";
 }
@@ -280,10 +276,6 @@
   content: "\F08BB";
 }
 
-.mdi-cogs::before {
-  content: "\F08D6";
-}
-
 .mdi-comment-question::before {
   content: "\F0817";
 }
@@ -294,10 +286,6 @@
 
 .mdi-connection::before {
   content: "\F1616";
-}
-
-.mdi-console::before {
-  content: "\F018D";
 }
 
 .mdi-console-line::before {
@@ -326,10 +314,6 @@
 
 .mdi-cursor-default-click::before {
   content: "\F0CFD";
-}
-
-.mdi-cursor-move::before {
-  content: "\F01BE";
 }
 
 .mdi-database::before {
@@ -408,6 +392,10 @@
   content: "\F0209";
 }
 
+.mdi-eye-off-outline::before {
+  content: "\F06D1";
+}
+
 .mdi-eye-outline::before {
   content: "\F06D0";
 }
@@ -452,6 +440,10 @@
   content: "\F021C";
 }
 
+.mdi-file-image::before {
+  content: "\F021F";
+}
+
 .mdi-file-music-outline::before {
   content: "\F0E2A";
 }
@@ -492,16 +484,8 @@
   content: "\F0234";
 }
 
-.mdi-folder::before {
-  content: "\F024B";
-}
-
 .mdi-folder-move::before {
   content: "\F0252";
-}
-
-.mdi-folder-multiple::before {
-  content: "\F0253";
 }
 
 .mdi-folder-open::before {
@@ -564,16 +548,16 @@
   content: "\F02D1";
 }
 
-.mdi-help-circle::before {
-  content: "\F02D7";
-}
-
 .mdi-help-circle-outline::before {
   content: "\F0625";
 }
 
 .mdi-home::before {
   content: "\F02DC";
+}
+
+.mdi-home-outline::before {
+  content: "\F06A1";
 }
 
 .mdi-hook::before {
@@ -624,36 +608,12 @@
   content: "\F0318";
 }
 
-.mdi-language-css3::before {
-  content: "\F031C";
-}
-
-.mdi-language-html5::before {
-  content: "\F031D";
-}
-
-.mdi-language-java::before {
-  content: "\F0B37";
-}
-
-.mdi-language-javascript::before {
-  content: "\F031E";
-}
-
 .mdi-language-markdown::before {
   content: "\F0354";
 }
 
 .mdi-language-markdown-outline::before {
   content: "\F0F5B";
-}
-
-.mdi-language-python::before {
-  content: "\F0320";
-}
-
-.mdi-language-typescript::before {
-  content: "\F06E6";
 }
 
 .mdi-layers-outline::before {
@@ -668,12 +628,20 @@
   content: "\F140B";
 }
 
+.mdi-lightning-bolt-outline::before {
+  content: "\F140C";
+}
+
 .mdi-link::before {
   content: "\F0337";
 }
 
 .mdi-link-variant::before {
   content: "\F0339";
+}
+
+.mdi-link-variant-plus::before {
+  content: "\F1100";
 }
 
 .mdi-loading::before {
@@ -704,8 +672,16 @@
   content: "\F16B2";
 }
 
+.mdi-logout::before {
+  content: "\F0343";
+}
+
 .mdi-magnify::before {
   content: "\F0349";
+}
+
+.mdi-magnify-close::before {
+  content: "\F0980";
 }
 
 .mdi-memory::before {
@@ -916,16 +892,24 @@
   content: "\F16A7";
 }
 
+.mdi-robot-off-outline::before {
+  content: "\F167B";
+}
+
 .mdi-robot-outline::before {
   content: "\F167A";
 }
 
-.mdi-send-outline::before {
-  content: "\F1165";
+.mdi-routes::before {
+  content: "\F046A";
 }
 
-.mdi-server::before {
-  content: "\F048B";
+.mdi-select-multiple::before {
+  content: "\F1281";
+}
+
+.mdi-send-outline::before {
+  content: "\F1165";
 }
 
 .mdi-server-network::before {
@@ -980,10 +964,6 @@
   content: "\F062C";
 }
 
-.mdi-square-edit-outline::before {
-  content: "\F090C";
-}
-
 .mdi-star::before {
   content: "\F04CE";
 }
@@ -1008,12 +988,16 @@
   content: "\F0666";
 }
 
-.mdi-store::before {
-  content: "\F04DC";
-}
-
 .mdi-subdirectory-arrow-right::before {
   content: "\F060D";
+}
+
+.mdi-svg::before {
+  content: "\F0721";
+}
+
+.mdi-swap-horizontal::before {
+  content: "\F04E1";
 }
 
 .mdi-sync::before {
@@ -1046,10 +1030,6 @@
 
 .mdi-theme-light-dark::before {
   content: "\F050E";
-}
-
-.mdi-timeline-text-outline::before {
-  content: "\F0BD4";
 }
 
 .mdi-timer-outline::before {
@@ -1098,10 +1078,6 @@
 
 .mdi-vector-point::before {
   content: "\F01C4";
-}
-
-.mdi-view-dashboard::before {
-  content: "\F056E";
 }
 
 .mdi-volume-high::before {

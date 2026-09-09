@@ -1,5 +1,6 @@
 import asyncio
 import random
+import re
 import traceback
 from collections.abc import AsyncGenerator
 from pathlib import Path
@@ -70,7 +71,9 @@ class PreProcessStage(Stage):
             try:
                 await event.react(random.choice(emojis))
             except Exception as e:
-                logger.warning(f"{platform} 预回应表情发送失败: {e}")
+                logger.warning(
+                    f"Failed to send a pre-response reaction on {platform}: {e}"
+                )
 
         # 路径映射
         if mappings := self.platform_settings.get("path_mapping", []):
@@ -80,9 +83,26 @@ class PreProcessStage(Stage):
             for idx, component in enumerate(message_chain):
                 if isinstance(component, Record | Image) and component.url:
                     for mapping in mappings:
-                        from_, to_ = mapping.split(":")
-                        from_ = from_.removesuffix("/")
-                        to_ = to_.removesuffix("/")
+                        # ":" is ambiguous for Windows absolute paths. Parse
+                        # the separator after a drive-lettered source first,
+                        # then handle a drive-lettered target.
+                        drive_source_mapping = re.fullmatch(
+                            r"([A-Za-z]:[^:]+):(.+)", mapping
+                        )
+                        drive_target_mapping = re.fullmatch(
+                            r"(.+):([A-Za-z]:.+)", mapping
+                        )
+                        if drive_source_mapping:
+                            from_, to_ = drive_source_mapping.groups()
+                        elif drive_target_mapping:
+                            from_, to_ = drive_target_mapping.groups()
+                        else:
+                            from_, separator, to_ = mapping.partition(":")
+                            if not separator:
+                                logger.warning(f"Invalid path mapping: {mapping}")
+                                continue
+                        from_ = from_.removesuffix("/").removesuffix("\\")
+                        to_ = to_.removesuffix("/").removesuffix("\\")
 
                         url = (
                             file_uri_to_path(component.url)
@@ -91,7 +111,7 @@ class PreProcessStage(Stage):
                         )
                         if url.startswith(from_):
                             component.url = url.replace(from_, to_, 1)
-                            logger.debug(f"路径映射: {url} -> {component.url}")
+                            logger.debug(f"Path mapping: {url} -> {component.url}")
                     message_chain[idx] = component
 
         # Normalize provider-facing media early so downstream code sees local files.
@@ -167,20 +187,23 @@ class PreProcessStage(Stage):
         if self.stt_settings.get("enable", False):
             # TODO: 独立
             ctx = self.plugin_manager.context
-            stt_provider = ctx.get_using_stt_provider(event.unified_msg_origin)
+            stt_provider = await ctx.get_using_stt_provider_async(
+                event.unified_msg_origin
+            )
             if not stt_provider:
                 logger.warning(
-                    f"会话 {event.unified_msg_origin} 未配置语音转文本模型。",
+                    f"Session {event.unified_msg_origin} has no speech-to-text "
+                    "provider configured.",
                 )
                 return
 
             async def _stt_record(record_comp: Record, is_reply: bool = False):
                 """对单个 Record 组件执行语音转文本，成功返回 Plain，失败返回 None。"""
-                prefix = "引用消息" if is_reply else ""
+                prefix = "referenced " if is_reply else ""
                 try:
                     path = await record_comp.convert_to_file_path()
                 except Exception as e:
-                    logger.warning(f"获取{prefix}语音路径失败: {e}")
+                    logger.warning(f"Failed to resolve the {prefix}voice path: {e}")
                     return None
 
                 retry = 5
@@ -188,19 +211,21 @@ class PreProcessStage(Stage):
                     try:
                         result = await stt_provider.get_text(audio_url=path)
                         if result:
-                            suffix = "(引用消息)" if is_reply else ""
-                            logger.info(f"语音转文本{suffix}结果: " + result)
+                            suffix = " (referenced message)" if is_reply else ""
+                            logger.info(f"Speech-to-text{suffix} result: " + result)
                             return Plain(result)
                         break
                     except FileNotFoundError:
                         # napcat workaround: file may not be ready immediately
-                        logger.debug(f"文件尚未就绪 ({path})，重试 {i + 1}/{retry}")
+                        logger.debug(
+                            f"File is not ready ({path}); retrying {i + 1}/{retry}."
+                        )
                         await asyncio.sleep(0.5)
                         continue
                     except BaseException as e:
                         logger.error(traceback.format_exc())
-                        suffix = "(引用消息)" if is_reply else ""
-                        logger.error(f"语音转文本{suffix}失败: {e}")
+                        suffix = " (referenced message)" if is_reply else ""
+                        logger.error(f"Speech-to-text{suffix} failed: {e}")
                         break
                 return None
 

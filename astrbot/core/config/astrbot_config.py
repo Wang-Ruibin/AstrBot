@@ -1,8 +1,12 @@
+import asyncio
+import copy
 import enum
 import json
 import logging
 import os
 import tempfile
+import threading
+from pathlib import Path
 
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 from astrbot.core.utils.auth_password import (
@@ -11,6 +15,7 @@ from astrbot.core.utils.auth_password import (
     hash_md5_dashboard_password,
     validate_dashboard_password,
 )
+from astrbot.core.utils.migra_helper import migrate_config_on_load
 
 from .default import DEFAULT_CONFIG, DEFAULT_VALUE_MAP
 
@@ -49,8 +54,13 @@ class AstrBotConfig(dict):
         object.__setattr__(self, "config_path", config_path)
         object.__setattr__(self, "default_config", default_config)
         object.__setattr__(self, "schema", schema)
+        object.__setattr__(self, "_save_state_lock", threading.Lock())
+        object.__setattr__(self, "_save_commit_lock", threading.Lock())
+        object.__setattr__(self, "_save_revision", 0)
+        object.__setattr__(self, "_save_committed_revision", 0)
 
-        if schema:
+        # An empty schema ({}) is falsy but valid: zero config items, not the global defaults.
+        if schema is not None:
             default_config = self._config_schema_to_default_config(schema)
 
         if not self.check_exist():
@@ -76,8 +86,12 @@ class AstrBotConfig(dict):
                 "_dashboard_password_change_required_from_config",
                 True,
             )
+        config_migrated = False
+        if default_config is DEFAULT_CONFIG:
+            config_migrated = migrate_config_on_load(conf, Path(config_path))
         # 检查配置完整性，并插入
-        has_new = self.check_config_integrity(default_config, conf)
+        has_new = self.check_config_integrity(default_config, conf, schema=schema)
+        has_new |= config_migrated
         reset_dashboard_password = self._consume_reset_dashboard_password_flag()
         if reset_dashboard_password and "dashboard" in conf:
             self._reset_generated_dashboard_password(conf)
@@ -87,14 +101,6 @@ class AstrBotConfig(dict):
             and isinstance(conf["dashboard"], dict)
             and not conf["dashboard"].get("pbkdf2_password")
             and not conf["dashboard"].get("password")
-        ):
-            self._reset_generated_dashboard_password(conf)
-            has_new = True
-        elif (
-            "dashboard" in conf
-            and isinstance(conf["dashboard"], dict)
-            and stored_dashboard_password_change_required
-            and conf["dashboard"].get("pbkdf2_password")
         ):
             self._reset_generated_dashboard_password(conf)
             has_new = True
@@ -163,8 +169,22 @@ class AstrBotConfig(dict):
 
         return conf
 
-    def check_config_integrity(self, refer_conf: dict, conf: dict, path=""):
-        """检查配置完整性，如果有新的配置项或顺序不一致则返回 True"""
+    def check_config_integrity(
+        self, refer_conf: dict, conf: dict, path="", schema: dict | None = None
+    ):
+        """Check the integrity of a user config against its reference defaults.
+
+        Args:
+            refer_conf: Reference configuration holding default values.
+            conf: User configuration, checked and normalized in place.
+            path: Dot-separated path of the current level, used for logging.
+            schema: Schema nodes parallel to ``refer_conf`` at this level. Entries
+                declared as ``"type": "dict"`` are free-form mappings, so their
+                user-added keys are preserved instead of being treated as stale.
+
+        Returns:
+            True if any items were added or the key order was fixed.
+        """
         has_new = False
 
         # 创建一个新的有序字典以保持参考配置的顺序
@@ -172,6 +192,7 @@ class AstrBotConfig(dict):
 
         # 先按照参考配置的顺序添加配置项
         for key, value in refer_conf.items():
+            child_schema = schema.get(key) if schema else None
             if key not in conf:
                 # 配置项不存在，插入默认值
                 path_ = path + "." + key if path else key
@@ -188,12 +209,28 @@ class AstrBotConfig(dict):
                     # 类型不匹配，使用默认值
                     new_conf[key] = value
                     has_new = True
+                elif (
+                    isinstance(child_schema, dict)
+                    and child_schema.get("type") == "dict"
+                ):
+                    # Free-form mapping declared as "type": "dict": user-added
+                    # keys are data instead of stale entries, keep them as-is.
+                    new_conf[key] = conf[key]
+                elif (path + "." + key if path else key) == "agent_runner.config":
+                    # Runner config is normalized according to runner_type when saved.
+                    new_conf[key] = conf[key]
                 else:
                     # 递归检查并同步顺序
+                    child_items = (
+                        child_schema.get("items")
+                        if isinstance(child_schema, dict)
+                        else None
+                    )
                     child_has_new = self.check_config_integrity(
                         value,
                         conf[key],
                         path + "." + key if path else key,
+                        schema=child_items if isinstance(child_items, dict) else None,
                     )
                     new_conf[key] = conf[key]
                     has_new |= child_has_new
@@ -225,30 +262,99 @@ class AstrBotConfig(dict):
     def save_config(
         self, replace_config: dict | None = None, *, indent: int = 2
     ) -> None:
-        """将配置写入文件
+        """Persist the current configuration synchronously.
 
-        如果传入 replace_config，则将配置替换为 replace_config
+        Args:
+            replace_config: Values to merge into the configuration before saving.
+            indent: Number of spaces used to indent the JSON output.
         """
-        if replace_config:
-            self.update(replace_config)
+        snapshot, revision = self._prepare_config_snapshot(replace_config)
+        self._write_config_snapshot(snapshot, revision, indent)
+
+    async def save_config_async(
+        self, replace_config: dict | None = None, *, indent: int = 2
+    ) -> bool:
+        """Persist a stable configuration snapshot without blocking the event loop.
+
+        Args:
+            replace_config: Values to merge into the configuration before saving.
+            indent: Number of spaces used to indent the JSON output.
+
+        Returns:
+            Whether this snapshot was committed. A newer committed snapshot supersedes
+            an older snapshot.
+        """
+        snapshot, revision = self._prepare_config_snapshot(replace_config)
+        return await asyncio.to_thread(
+            self._write_config_snapshot,
+            snapshot,
+            revision,
+            indent,
+        )
+
+    def _prepare_config_snapshot(self, replace_config: dict | None) -> tuple[dict, int]:
+        """Create an isolated snapshot and allocate its save revision.
+
+        Args:
+            replace_config: Values to merge into the configuration before snapshotting.
+
+        Returns:
+            The isolated configuration snapshot and its monotonically increasing
+            revision.
+        """
+        with self._save_state_lock:
+            if replace_config:
+                self.update(replace_config)
+            snapshot = copy.deepcopy(dict(self))
+            revision = self._save_revision + 1
+            object.__setattr__(self, "_save_revision", revision)
+        return snapshot, revision
+
+    def _write_config_snapshot(
+        self, snapshot: dict, revision: int, indent: int
+    ) -> bool:
+        """Write and conditionally commit a prepared configuration snapshot.
+
+        Args:
+            snapshot: Isolated configuration data to serialize.
+            revision: Revision allocated when the snapshot was prepared.
+            indent: Number of spaces used to indent the JSON output.
+
+        Returns:
+            Whether the snapshot replaced the current configuration file.
+        """
         directory = os.path.dirname(os.path.abspath(self.config_path)) or "."
+        # The directory may not exist yet when a config profile is created for
+        # the first time (e.g. `create_conf` instantiates AstrBotConfig with a
+        # brand-new path). mkstemp would raise FileNotFoundError otherwise.
+        os.makedirs(directory, exist_ok=True)
         fd, temp_path = tempfile.mkstemp(
             dir=directory,
             prefix=f".{os.path.basename(self.config_path)}.",
             suffix=".tmp",
         )
+        committed = False
         try:
             with os.fdopen(fd, "w", encoding="utf-8-sig") as f:
-                json.dump(self, f, indent=indent, ensure_ascii=False)
+                json.dump(snapshot, f, indent=indent, ensure_ascii=False)
                 f.flush()
                 os.fsync(f.fileno())
-            os.replace(temp_path, self.config_path)
-        except Exception:
-            try:
-                os.unlink(temp_path)
-            except FileNotFoundError:
-                pass
-            raise
+            with self._save_commit_lock:
+                if revision > self._save_committed_revision:
+                    os.replace(temp_path, self.config_path)
+                    object.__setattr__(
+                        self,
+                        "_save_committed_revision",
+                        revision,
+                    )
+                    committed = True
+        finally:
+            if not committed:
+                try:
+                    os.unlink(temp_path)
+                except FileNotFoundError:
+                    pass
+        return committed
 
     def __getattr__(self, item):
         try:

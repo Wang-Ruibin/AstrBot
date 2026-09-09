@@ -8,6 +8,8 @@ from collections.abc import AsyncGenerator
 from time import time
 from typing import Any
 
+from deprecated import deprecated
+
 from astrbot import logger
 from astrbot.core.agent.tool import ToolSet
 from astrbot.core.db.po import Conversation
@@ -166,8 +168,7 @@ class AstrMessageEvent(abc.ABC):
                     parts.append("[引用消息]")
             else:
                 parts.append(f"[{i.type}]")
-            parts.append(" ")
-        return "".join(parts)
+        return " ".join(parts)
 
     def get_message_outline(self) -> str:
         """获取消息概要。
@@ -302,9 +303,11 @@ class AstrMessageEvent(abc.ABC):
         默认实现为空，由具体平台按需重写。
         """
 
+    @deprecated(version="3.5.18", reason="No longer invoked by the message scheduler.")
     async def _pre_send(self) -> None:
         """调度器会在执行 send() 前调用该方法 deprecated in v3.5.18"""
 
+    @deprecated(version="3.5.18", reason="No longer invoked by the message scheduler.")
     async def _post_send(self) -> None:
         """调度器会在执行 send() 后调用该方法 deprecated in v3.5.18"""
 
@@ -501,9 +504,27 @@ class AstrMessageEvent(abc.ABC):
         await self.send(MessageChain([Plain(emoji)]))
 
     async def get_group(self, group_id: str | None = None, **kwargs) -> Group | None:
-        """获取一个群聊的数据, 如果不填写 group_id: 如果是私聊消息，返回 None。如果是群聊消息，返回当前群聊的数据。
+        """Get group information.
 
-        适配情况:
+        Platform event subclasses can enrich the result through their APIs. The
+        default implementation returns inbound group data, or an ID-only object
+        when an explicit group is queried.
 
-        - aiocqhttp(OneBotv11)
+        Args:
+            group_id: Group ID to query. Defaults to the current message group.
+            **kwargs: Extra platform-specific query options.
+
+        Returns:
+            Group information, or ``None`` for a private message without an
+            explicit group ID.
         """
+        resolved_group_id = group_id or self.get_group_id()
+        if not resolved_group_id:
+            return None
+        resolved_group_id = str(resolved_group_id)
+        if (
+            self.message_obj.group
+            and self.message_obj.group.group_id == resolved_group_id
+        ):
+            return self.message_obj.group
+        return Group(group_id=resolved_group_id)
