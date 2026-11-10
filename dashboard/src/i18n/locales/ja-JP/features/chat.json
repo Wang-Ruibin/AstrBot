@@ -1,6 +1,18 @@
 {
   "title": "チャットしよう！",
   "subtitle": "AI アシスタントと会話",
+  "settings": {
+    "general": "一般",
+    "chat": "チャット",
+    "appearance": "外観",
+    "light": "ライト",
+    "dark": "ダーク",
+    "system": "システムに合わせる",
+    "streaming": "ストリーミング出力",
+    "streamingHint": "生成中の回答を順次表示します。ChatUI にのみ適用されます。",
+    "reasoning": "思考内容を表示",
+    "reasoningHint": "モデルが返した思考過程を表示します。ChatUI にのみ適用されます。"
+  },
   "input": {
     "placeholder": "何でも聞いてください",
     "projectPlaceholder": "次に何をしますか？",
@@ -18,7 +30,19 @@
     "assistant": "アシスタント",
     "system": "システム",
     "error": "エラーメッセージ",
-    "loading": "考え中…"
+    "loading": "考え中…",
+    "loadingVariants": [
+      "(｡•̀ᴗ-)✧ 考え中...",
+      "(・_・ヾ じっくり検討中...",
+      "(๑•̀ㅂ•́)و 思考を整理中...",
+      "(｡･ω･｡) ひらめきを探し中...",
+      "( •̀ ω •́ )✧ しっかり分析中...",
+      "(つ•̀ω•́)つ 言葉を選び中...",
+      "(・・。)ゞ 手がかりを整理中...",
+      "(ง •_•)ง 解決策を模索中...",
+      "( ˘ω˘ ) 可能性を検討中...",
+      "(ﾉ◕ヮ◕)ﾉ 答えを準備中..."
+    ]
   },
   "voice": {
     "start": "録音を開始",
@@ -38,6 +62,7 @@
     "examples": "質問例"
   },
   "actions": {
+    "scrollToBottom": "一番下へ移動",
     "copy": "コピー",
     "regenerate": "再生成",
     "retry": "再試行",
@@ -74,6 +99,8 @@
     "placeholder": "この内容についてさらに質問…"
   },
   "conversation": {
+    "loading": "会話を読み込み中",
+    "loadFailed": "会話を読み込めませんでした",
     "title": "会話",
     "newConversation": "新しい会話",
     "noHistory": "会話履歴がありません",
@@ -115,12 +142,19 @@
     "title": "設定"
   },
   "reasoning": {
+    "enabled": "思考内容の表示：オン",
+    "disabled": "思考内容の表示：オフ",
     "thinking": "思考プロセス",
     "summarySeparator": "、",
     "thinkSummary": "思考 {count} 回",
     "toolSummary": "ツール使用 {count} 回",
     "think": "思考",
     "toolUsed": "ツールを使用"
+  },
+  "history": {
+    "loadFailed": "メッセージを読み込めませんでした",
+    "loadEarlierFailed": "以前のメッセージを読み込めませんでした",
+    "loading": "以前のメッセージを読み込み中"
   },
   "reply": {
     "replyTo": "引用",
@@ -133,12 +167,14 @@
     "name": "プロジェクト名",
     "emoji": "アイコン（Emoji）",
     "description": "プロジェクトの説明（任意）",
+    "moreSettings": "その他の設定",
     "workspace": {
       "type": "ワークスペース",
       "session": "セッションごとに分離",
       "project": "プロジェクト共有ワークスペース",
       "custom": "カスタムパス",
-      "path": "ワークスペースのパス"
+      "path": "ワークスペースのパス",
+      "selectPath": "フォルダーを選択"
     },
     "loadingSessions": "会話を読み込み中…",
     "noSessions": "このプロジェクトには会話がありません",
@@ -152,6 +188,7 @@
     "refresh": "ファイルツリーを再読み込み",
     "filter": "ファイルを絞り込み…",
     "clearFilter": "ファイルの絞り込みを解除",
+    "selectSession": "ワークスペースのファイルを表示する会話を選択してください",
     "empty": "ワークスペースにファイルがありません",
     "noMatches": "一致するファイルがありません",
     "loadFailed": "ワークスペースのファイルを読み込めませんでした",
